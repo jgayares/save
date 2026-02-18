@@ -3,11 +3,8 @@ RETURNS trigger
 LANGUAGE plpgsql
 AS $function$
 DECLARE
-  v_requirement_id uuid := '3f2832da-ab31-4376-a94d-c3589fc74d4c';
-  v_organization_id uuid := '2712c3e1-09f3-4eda-aac4-27e04df5d384';
+  v_organization_id uuid := '2712c3e1-09f3-4eda-aac4-27e04df5d384'::uuid;
   v_completed_at timestamptz;
-
-  v_status_id uuid;
 BEGIN
   IF NEW.payment_status = 'PAID'
      AND (OLD.payment_status IS DISTINCT FROM NEW.payment_status)
@@ -15,6 +12,65 @@ BEGIN
   THEN
     v_completed_at := COALESCE(NEW.paid_at, now());
 
+    WITH
+    inv AS (
+      SELECT i.id AS invoice_id, i.student_id
+      FROM public.invoices i
+      WHERE i.invoice_family_id = NEW.id
+        AND i.deleted_at IS NULL
+      ORDER BY i.created_at DESC
+      LIMIT 1
+    ),
+    sel AS (
+      SELECT
+        inv.invoice_id,
+        inv.student_id,
+        s.selected_program,
+        s.selected_learning_material,
+        s.selected_curriculum
+      FROM inv
+      JOIN public.students s ON s.id = inv.student_id
+    ),
+    mapped AS (
+      SELECT
+        sel.*,
+        p.id  AS program_id,
+        lm.id AS learning_material_id,
+        c.id  AS curriculum_id
+      FROM sel
+      LEFT JOIN public.programs p
+        ON p.organization_id = v_organization_id
+       AND p.name = sel.selected_program
+      LEFT JOIN public.learning_materials lm
+        ON lm.organization_id = v_organization_id
+       AND lm.name = sel.selected_learning_material
+      LEFT JOIN public.curriculums c
+        ON c.organization_id = v_organization_id
+       AND c.name = sel.selected_curriculum
+    ),
+    prc AS (
+      SELECT
+        m.*,
+        prcond.program_requirement_id
+      FROM mapped m
+      JOIN public.program_requirement_conditions prcond
+        ON COALESCE(prcond.program_id, '00000000-0000-0000-0000-000000000000'::uuid)
+           = COALESCE(m.program_id, '00000000-0000-0000-0000-000000000000'::uuid)
+       AND COALESCE(prcond.learning_material_id, '00000000-0000-0000-0000-000000000000'::uuid)
+           = COALESCE(m.learning_material_id, '00000000-0000-0000-0000-000000000000'::uuid)
+       AND COALESCE(prcond.curriculum_id, '00000000-0000-0000-0000-000000000000'::uuid)
+           = COALESCE(m.curriculum_id, '00000000-0000-0000-0000-000000000000'::uuid)
+       AND prcond.program_auxiliary_service_id IS NULL
+      LIMIT 1
+    ),
+    req AS (
+      SELECT
+        prc.*,
+        pr.requirement_id
+      FROM prc
+      JOIN public.program_requirements pr
+        ON pr.id = prc.program_requirement_id
+    )
     INSERT INTO public.parent_requirement_progress (
       parent_id,
       organization_id,
@@ -31,155 +87,42 @@ BEGIN
     SELECT
       NEW.parent_id,
       v_organization_id,
-      v_requirement_id,
+      r.requirement_id,
       true,
       v_completed_at,
       jsonb_build_object(
         'invoice_family_id', NEW.id,
-        'invoice_id', i.id,
-        'selected_program', s.selected_program,
-        'selected_program_id', p_match.id,
-        'selected_learning_material', s.selected_learning_material,
-        'selected_learning_material_id', lm_match.id,
-        'selected_curriculum', s.selected_curriculum,
-        'selected_curriculum_id', c_match.id,
-        'reservation_for',
-          CASE
-            WHEN concat_ws(' ', s.selected_program, s.selected_learning_material, s.selected_curriculum) = ''
-              THEN NULL
-            ELSE
-              'Reservation for ' || concat_ws(' ', s.selected_program, s.selected_learning_material, s.selected_curriculum)
-          END
+        'invoice_id', r.invoice_id,
+        'selected_program', r.selected_program,
+        'selected_program_id', r.program_id,
+        'selected_learning_material', r.selected_learning_material,
+        'selected_learning_material_id', r.learning_material_id,
+        'selected_curriculum', r.selected_curriculum,
+        'selected_curriculum_id', r.curriculum_id
       ),
-      i.student_id,
-      p_match.id,
-      lm_match.id,
+      r.student_id,
+      r.program_id,
+      r.learning_material_id,
       NULL::uuid,
-      c_match.id
-    FROM public.invoices i
-    LEFT JOIN public.students s
-      ON s.id = i.student_id
-    LEFT JOIN LATERAL (
-      SELECT p.id
-      FROM public.programs p
-      WHERE p.organization_id = v_organization_id
-        AND p.name = s.selected_program
-      LIMIT 1
-    ) p_match ON true
-    LEFT JOIN LATERAL (
-      SELECT lm.id
-      FROM public.learning_materials lm
-      WHERE lm.organization_id = v_organization_id
-        AND lm.name = s.selected_learning_material
-      LIMIT 1
-    ) lm_match ON true
-    LEFT JOIN LATERAL (
-      SELECT c.id
-      FROM public.curriculums c
-      WHERE c.organization_id = v_organization_id
-        AND c.name = s.selected_curriculum
-      LIMIT 1
-    ) c_match ON true
-    WHERE i.invoice_family_id = NEW.id
-      AND NOT EXISTS (
-        SELECT 1
-        FROM public.parent_requirement_progress prp
-        WHERE prp.parent_id = NEW.parent_id
-          AND prp.organization_id = v_organization_id
-          AND prp.requirement_id = v_requirement_id
-          AND COALESCE(prp.student_id, '00000000-0000-0000-0000-000000000000'::uuid)
-              = COALESCE(i.student_id, '00000000-0000-0000-0000-000000000000'::uuid)
-          AND COALESCE(prp.program_id, '00000000-0000-0000-0000-000000000000'::uuid)
-              = COALESCE(p_match.id, '00000000-0000-0000-0000-000000000000'::uuid)
-          AND COALESCE(prp.learning_material_id, '00000000-0000-0000-0000-000000000000'::uuid)
-              = COALESCE(lm_match.id, '00000000-0000-0000-0000-000000000000'::uuid)
-          AND prp.program_auxiliary_service_id IS NULL
-          AND COALESCE(prp.curriculum_id, '00000000-0000-0000-0000-000000000000'::uuid)
-              = COALESCE(c_match.id, '00000000-0000-0000-0000-000000000000'::uuid)
-      );
-
-    INSERT INTO public.parent_program_status (
-      student_id,
-      program_id,
-      learning_material_id,
-      program_auxiliary_service_id,
-      curriculum_id,
+      r.curriculum_id
+    FROM req r
+    ON CONFLICT (
       parent_id,
-      status_id,
       organization_id,
-      computed_at
+      requirement_id,
+      COALESCE(student_id, '00000000-0000-0000-0000-000000000000'::uuid),
+      COALESCE(program_id, '00000000-0000-0000-0000-000000000000'::uuid),
+      COALESCE(learning_material_id, '00000000-0000-0000-0000-000000000000'::uuid),
+      COALESCE(program_auxiliary_service_id, '00000000-0000-0000-0000-000000000000'::uuid),
+      COALESCE(curriculum_id, '00000000-0000-0000-0000-000000000000'::uuid)
     )
-    SELECT
-      i.student_id,
-      p_match.id,
-      lm_match.id,
-      NULL::uuid,
-      c_match.id,
-      NEW.parent_id,
-
-      -- status_id rules
-      CASE
-        WHEN s.selected_program = 'Touch'
-         AND s.selected_learning_material = 'Classical Conversations Curriculum'
-          THEN 'bc0ce961-3197-4c0d-ba88-97be7bb5112c'::uuid
-
-        WHEN s.selected_program = 'VCIS Online'
-         AND s.selected_learning_material = 'BJU DLO Curriculum Bundle'
-          THEN 'bc0ce961-3197-4c0d-ba88-97be7bb5112c'::uuid
-
-        ELSE NULL::uuid
-      END AS status_id,
-
-      v_organization_id,
-      v_completed_at
-    FROM public.invoices i
-    LEFT JOIN public.students s
-      ON s.id = i.student_id
-    LEFT JOIN LATERAL (
-      SELECT p.id
-      FROM public.programs p
-      WHERE p.organization_id = v_organization_id
-        AND p.name = s.selected_program
-      LIMIT 1
-    ) p_match ON true
-    LEFT JOIN LATERAL (
-      SELECT lm.id
-      FROM public.learning_materials lm
-      WHERE lm.organization_id = v_organization_id
-        AND lm.name = s.selected_learning_material
-      LIMIT 1
-    ) lm_match ON true
-    LEFT JOIN LATERAL (
-      SELECT c.id
-      FROM public.curriculums c
-      WHERE c.organization_id = v_organization_id
-        AND c.name = s.selected_curriculum
-      LIMIT 1
-    ) c_match ON true
-    WHERE i.invoice_family_id = NEW.id
-      -- only insert when status_id matched
-      AND (
-        (s.selected_program = 'Touch' AND s.selected_learning_material = 'Classical Conversations Curriculum')
-        OR
-        (s.selected_program = 'VCIS Online' AND s.selected_learning_material = 'BJU DLO Curriculum Bundle')
-      )
-      -- prevent duplicates for same combo + status
-      AND NOT EXISTS (
-        SELECT 1
-        FROM public.parent_program_status pps
-        WHERE pps.parent_id = NEW.parent_id
-          AND pps.organization_id = v_organization_id
-          AND COALESCE(pps.student_id, '00000000-0000-0000-0000-000000000000'::uuid)
-              = COALESCE(i.student_id, '00000000-0000-0000-0000-000000000000'::uuid)
-          AND COALESCE(pps.program_id, '00000000-0000-0000-0000-000000000000'::uuid)
-              = COALESCE(p_match.id, '00000000-0000-0000-0000-000000000000'::uuid)
-          AND COALESCE(pps.learning_material_id, '00000000-0000-0000-0000-000000000000'::uuid)
-              = COALESCE(lm_match.id, '00000000-0000-0000-0000-000000000000'::uuid)
-          AND pps.program_auxiliary_service_id IS NULL
-          AND COALESCE(pps.curriculum_id, '00000000-0000-0000-0000-000000000000'::uuid)
-              = COALESCE(c_match.id, '00000000-0000-0000-0000-000000000000'::uuid)
-          AND pps.status_id = 'bc0ce961-3197-4c0d-ba88-97be7bb5112c'::uuid
-      );
+    DO UPDATE SET
+      is_completed = true,
+      completed_at = EXCLUDED.completed_at,
+      metadata = CASE
+        WHEN EXCLUDED.metadata IS NULL THEN parent_requirement_progress.metadata
+        ELSE EXCLUDED.metadata
+      END;
 
   END IF;
 
