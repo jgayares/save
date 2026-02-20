@@ -1,34 +1,9 @@
-DROP FUNCTION IF EXISTS get_program_assets_for_grade_curriculum(uuid, text, text);
+-- DROP FUNCTION public.get_program_assets_for_grade_curriculum(uuid, text, text);
 
-CREATE OR REPLACE FUNCTION get_program_assets_for_grade_curriculum(
-  p_org_id uuid,
-  p_curriculum_name text,
-  p_grade_level_name text
-)
-RETURNS TABLE (
-  program_id uuid,                          -- 1
-  program_name text,                        -- 2
-  curriculum_id uuid,                       -- 3
-  curriculum_name text,                     -- 4
-  program_asset_id uuid,                    -- 5
-  program_asset_name text,                  -- 6
-  program_asset_level text,                 -- 7
-  program_asset_inclusion text[],           -- 8
-  program_asset_description text,           -- 9
-  program_asset_video text,                 -- 10
-  program_asset_image text,                 -- 11
-  program_asset_summary text,               -- 12
-  program_asset_logo text,                  -- 13
-  metadata jsonb,                           -- 14
-  program_asset_learning_material_id uuid,  -- 15
-  program_asset_learning_material_name text,-- 16
-  payment_prerequisites jsonb,              -- 17
-  grade_level text[],                       -- 18
-  is_available boolean,                     -- 19
-  summary text                              -- 20
-) 
-LANGUAGE plpgsql
-AS $$
+CREATE OR REPLACE FUNCTION public.get_program_assets_for_grade_curriculum(p_org_id uuid, p_curriculum_name text, p_grade_level_name text)
+ RETURNS TABLE(program_id uuid, program_name text, curriculum_id uuid, curriculum_name text, program_asset_id uuid, program_asset_name text, program_asset_level text, program_asset_inclusion text[], program_asset_description text, program_asset_video text, program_asset_image text, program_asset_summary text, program_asset_logo text, metadata jsonb, program_asset_learning_material_id uuid, program_asset_learning_material_name text, payment_prerequisites jsonb, grade_level text[], is_available boolean, summary text)
+ LANGUAGE plpgsql
+AS $function$
 BEGIN
   RETURN QUERY
   
@@ -134,4 +109,5 @@ BEGIN
   WHERE p.organization_id = p_org_id
   ORDER BY p.name, pa.name;
 END
-$$;
+$function$
+;
