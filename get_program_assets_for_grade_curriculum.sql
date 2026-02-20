@@ -1,7 +1,29 @@
--- DROP FUNCTION public.get_program_assets_for_grade_curriculum(uuid, text, text);
+DROP FUNCTION public.get_program_assets_for_grade_curriculum(uuid, text, text);
 
 CREATE OR REPLACE FUNCTION public.get_program_assets_for_grade_curriculum(p_org_id uuid, p_curriculum_name text, p_grade_level_name text)
- RETURNS TABLE(program_id uuid, program_name text, curriculum_id uuid, curriculum_name text, program_asset_id uuid, program_asset_name text, program_asset_level text, program_asset_inclusion text[], program_asset_description text, program_asset_video text, program_asset_image text, program_asset_summary text, program_asset_logo text, metadata jsonb, program_asset_learning_material_id uuid, program_asset_learning_material_name text, payment_prerequisites jsonb, grade_level text[], is_available boolean, summary text)
+ RETURNS TABLE(
+    program_id uuid, 
+    program_name text, 
+    curriculum_id uuid, 
+    curriculum_name text, 
+    program_asset_id uuid, 
+    program_asset_name text, 
+    program_asset_level text, 
+    program_asset_inclusion text[], 
+    program_asset_description text, 
+    program_asset_video text, 
+    program_asset_image text, 
+    program_asset_summary text, 
+    program_asset_logo text, 
+    metadata jsonb, 
+    program_asset_learning_material_id uuid, 
+    program_asset_learning_material_name text, 
+    payment_prerequisites jsonb, 
+    grade_level text[], 
+    is_available boolean, 
+    summary text,
+    program_auxiliary_services text[] -- New Column
+)
  LANGUAGE plpgsql
 AS $function$
 BEGIN
@@ -20,6 +42,21 @@ BEGIN
     FROM grade_levels gl 
     WHERE gl.name = p_grade_level_name 
     LIMIT 1
+  ),
+  
+  -- Logic to fetch auxiliary services based on the current asset's context
+  aux_services AS (
+    SELECT 
+      pasr.program_id, 
+      pasr.learning_material_id, 
+      array_agg(pas.name) as service_names
+    FROM public.program_auxiliary_service_rules pasr
+    JOIN public.program_auxiliary_services pas ON pas.id = pasr.program_auxiliary_service_id
+    JOIN grade_ctx gc ON pasr.grade_level_id = gc.id
+    WHERE pasr.is_active = true 
+      AND pas.is_active = true
+      AND pasr.organization_id = p_org_id
+    GROUP BY pasr.program_id, pasr.learning_material_id
   ),
   
   rules AS (
@@ -71,24 +108,24 @@ BEGIN
   )
 
   SELECT
-    p.id,                                     -- 1
-    p.name,                                   -- 2
-    ctx.id,                                   -- 3
-    ctx.name,                                 -- 4
-    pa.id,                                    -- 5
-    pa.name,                                  -- 6
-    pa.level,                                 -- 7
-    pa.inclusion,                             -- 8
-    pa.description,                           -- 9
-    pa.video,                                 -- 10
-    pa.image,                                 -- 11
-    pa.summary,                               -- 12
-    pa.logo,                                  -- 13
-    pa.metadata,                              -- 14
-    pa.learning_material_id,                  -- 15
-    lm.name,                                  -- 16
-    COALESCE(ppp.p_reqs, '[]'::jsonb),        -- 17
-    COALESCE(rgl.g_levels, ARRAY[]::text[]),  -- 18
+    p.id,                                     
+    p.name,                                   
+    ctx.id,                                   
+    ctx.name,                                 
+    pa.id,                                    
+    pa.name,                                  
+    pa.level,                                 
+    pa.inclusion,                             
+    pa.description,                           
+    pa.video,                                 
+    pa.image,                                 
+    pa.summary,                               
+    pa.logo,                                  
+    pa.metadata,                              
+    pa.learning_material_id,                  
+    lm.name,                                  
+    COALESCE(ppp.p_reqs, '[]'::jsonb),        
+    COALESCE(rgl.g_levels, ARRAY[]::text[]),  
     CASE
       WHEN pa.learning_material_id IS NULL THEN true
       ELSE EXISTS (
@@ -96,8 +133,9 @@ BEGIN
         WHERE r.program_id = pa.program_id 
           AND r.learning_material_id = pa.learning_material_id
       )
-    END,                                      -- 19
-    pa.summary                                -- 20
+    END,                                      
+    pa.summary,
+    COALESCE(aux.service_names, ARRAY[]::text[]) -- New Column Output
   FROM program_assets pa
   JOIN programs p ON p.id = pa.program_id AND p.is_active = true
   LEFT JOIN learning_materials lm ON lm.id = pa.learning_material_id
@@ -106,8 +144,10 @@ BEGIN
   LEFT JOIN required_grade_levels rgl ON rgl.program_id = pa.program_id
        AND ((pa.learning_material_id IS NOT NULL AND rgl.learning_material_id = pa.learning_material_id)
             OR (pa.learning_material_id IS NULL AND rgl.learning_material_id IS NULL))
+  -- Join the auxiliary services CTE
+  LEFT JOIN aux_services aux ON aux.program_id = pa.program_id 
+       AND aux.learning_material_id = pa.learning_material_id
   WHERE p.organization_id = p_org_id
   ORDER BY p.name, pa.name;
 END
-$function$
-;
+$function$;
