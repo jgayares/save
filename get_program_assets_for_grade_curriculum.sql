@@ -1,5 +1,3 @@
-DROP FUNCTION public.get_program_assets_for_grade_curriculum(uuid, text, text);
-
 CREATE OR REPLACE FUNCTION public.get_program_assets_for_grade_curriculum(p_org_id uuid, p_curriculum_name text, p_grade_level_name text)
  RETURNS TABLE(
     program_id uuid, 
@@ -8,7 +6,7 @@ CREATE OR REPLACE FUNCTION public.get_program_assets_for_grade_curriculum(p_org_
     curriculum_name text, 
     program_asset_id uuid, 
     program_asset_name text, 
-    program_asset_level text, 
+    program_asset_level text,
     program_asset_inclusion text[], 
     program_asset_description text, 
     program_asset_video text, 
@@ -21,9 +19,9 @@ CREATE OR REPLACE FUNCTION public.get_program_assets_for_grade_curriculum(p_org_
     payment_prerequisites jsonb, 
     grade_level text[], 
     is_available boolean, 
-    summary text,
-    program_auxiliary_services text[] -- New Column
-)
+    summary text, 
+    program_auxiliary_services text[]
+ )
  LANGUAGE plpgsql
 AS $function$
 BEGIN
@@ -43,8 +41,20 @@ BEGIN
     WHERE gl.name = p_grade_level_name 
     LIMIT 1
   ),
+
+  level_ranges AS (
+    SELECT 
+      cr.program_id, 
+      cr.learning_material_id,
+      (array_agg(gl.name ORDER BY gl.level ASC))[1] || ' - ' || (array_agg(gl.name ORDER BY gl.level DESC))[1] as level_display
+    FROM curriculum_rules cr
+    JOIN grade_levels gl ON gl.id = cr.grade_level_id
+    JOIN ctx ON ctx.id = cr.curriculum_id
+    WHERE cr.is_active = true 
+      AND cr.organization_id = p_org_id
+    GROUP BY cr.program_id, cr.learning_material_id
+  ),
   
-  -- Logic to fetch auxiliary services based on the current asset's context
   aux_services AS (
     SELECT 
       pasr.program_id, 
@@ -63,11 +73,10 @@ BEGIN
     SELECT DISTINCT cr.program_id, cr.learning_material_id
     FROM curriculum_rules cr
     JOIN grade_levels gl ON gl.id = cr.grade_level_id
-    JOIN curriculums c ON c.id = cr.curriculum_id AND c.is_active = true
+    JOIN ctx ON ctx.id = cr.curriculum_id
     WHERE cr.is_active = true 
       AND cr.organization_id = p_org_id 
-      AND gl.name = p_grade_level_name 
-      AND c.name = p_curriculum_name
+      AND gl.name = p_grade_level_name
   ),
   
   required_grade_levels AS (
@@ -79,14 +88,14 @@ BEGIN
       SELECT cr.program_id, cr.learning_material_id, gl.name AS grade_level_name
       FROM curriculum_rules cr
       JOIN grade_levels gl ON gl.id = cr.grade_level_id
-      JOIN curriculums c ON c.id = cr.curriculum_id AND c.is_active = true
-      WHERE cr.is_active = true AND cr.organization_id = p_org_id AND c.name = p_curriculum_name
+      JOIN ctx ON ctx.id = cr.curriculum_id
+      WHERE cr.is_active = true AND cr.organization_id = p_org_id
       UNION ALL
       SELECT cr.program_id, NULL::uuid, gl.name AS grade_level_name
       FROM curriculum_rules cr
       JOIN grade_levels gl ON gl.id = cr.grade_level_id
-      JOIN curriculums c ON c.id = cr.curriculum_id AND c.is_active = true
-      WHERE cr.is_active = true AND cr.organization_id = p_org_id AND c.name = p_curriculum_name
+      JOIN ctx ON ctx.id = cr.curriculum_id
+      WHERE cr.is_active = true AND cr.organization_id = p_org_id
     ) x
     GROUP BY x.program_id, x.learning_material_id
   ),
@@ -114,7 +123,7 @@ BEGIN
     ctx.name,                                 
     pa.id,                                    
     pa.name,                                  
-    pa.level,                                 
+    COALESCE(lr.level_display, pa.level), -- DITO YUNG OVERRIDE: Gamitin yung range, fallback sa original pag walang rule
     pa.inclusion,                             
     pa.description,                           
     pa.video,                                 
@@ -135,16 +144,18 @@ BEGIN
       )
     END,                                      
     pa.summary,
-    COALESCE(aux.service_names, ARRAY[]::text[]) -- New Column Output
+    COALESCE(aux.service_names, ARRAY[]::text[])
   FROM program_assets pa
   JOIN programs p ON p.id = pa.program_id AND p.is_active = true
   LEFT JOIN learning_materials lm ON lm.id = pa.learning_material_id
   LEFT JOIN ctx ON true
+  -- Join yung level_ranges para makuha yung "Min - Max" logic
+  LEFT JOIN level_ranges lr ON lr.program_id = pa.program_id 
+       AND (lr.learning_material_id = pa.learning_material_id OR (pa.learning_material_id IS NULL AND lr.learning_material_id IS NULL))
   LEFT JOIN payment_prerequisites ppp ON ppp.program_id = pa.program_id AND ppp.learning_material_id = pa.learning_material_id
   LEFT JOIN required_grade_levels rgl ON rgl.program_id = pa.program_id
        AND ((pa.learning_material_id IS NOT NULL AND rgl.learning_material_id = pa.learning_material_id)
             OR (pa.learning_material_id IS NULL AND rgl.learning_material_id IS NULL))
-  -- Join the auxiliary services CTE
   LEFT JOIN aux_services aux ON aux.program_id = pa.program_id 
        AND aux.learning_material_id = pa.learning_material_id
   WHERE p.organization_id = p_org_id
