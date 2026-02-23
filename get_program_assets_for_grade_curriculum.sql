@@ -1,27 +1,7 @@
+-- DROP FUNCTION public.get_program_assets_for_grade_curriculum(uuid, text, text);
+
 CREATE OR REPLACE FUNCTION public.get_program_assets_for_grade_curriculum(p_org_id uuid, p_curriculum_name text, p_grade_level_name text)
- RETURNS TABLE(
-    program_id uuid, 
-    program_name text, 
-    curriculum_id uuid, 
-    curriculum_name text, 
-    program_asset_id uuid, 
-    program_asset_name text, 
-    program_asset_level text,
-    program_asset_inclusion text[], 
-    program_asset_description text, 
-    program_asset_video text, 
-    program_asset_image text, 
-    program_asset_summary text, 
-    program_asset_logo text, 
-    metadata jsonb, 
-    program_asset_learning_material_id uuid, 
-    program_asset_learning_material_name text, 
-    payment_prerequisites jsonb, 
-    grade_level text[], 
-    is_available boolean, 
-    summary text, 
-    program_auxiliary_services text[]
- )
+ RETURNS TABLE(program_id uuid, program_name text, curriculum_id uuid, curriculum_name text, program_asset_id uuid, program_asset_name text, program_asset_level text, program_asset_inclusion text[], program_asset_description text, program_asset_video text, program_asset_image text, program_asset_summary text, program_asset_logo text, metadata jsonb, program_asset_learning_material_id uuid, program_asset_learning_material_name text, payment_prerequisites jsonb, grade_level text[], is_available boolean, summary text, program_auxiliary_services text[], applicable_curriculums text[])
  LANGUAGE plpgsql
 AS $function$
 BEGIN
@@ -67,6 +47,21 @@ BEGIN
       AND pas.is_active = true
       AND pasr.organization_id = p_org_id
     GROUP BY pasr.program_id, pasr.learning_material_id
+  ),
+
+  applicable_currs AS (
+    SELECT 
+      cr.program_id, 
+      cr.learning_material_id, 
+      array_agg(DISTINCT c.name ORDER BY c.name) as curr_names
+    FROM curriculum_rules cr
+    JOIN grade_levels gl ON gl.id = cr.grade_level_id
+    JOIN curriculums c ON c.id = cr.curriculum_id
+    WHERE cr.is_active = true 
+      AND c.is_active = true
+      AND cr.organization_id = p_org_id
+      AND gl.name = p_grade_level_name
+    GROUP BY cr.program_id, cr.learning_material_id
   ),
   
   rules AS (
@@ -123,7 +118,7 @@ BEGIN
     ctx.name,                                 
     pa.id,                                    
     pa.name,                                  
-    COALESCE(lr.level_display, pa.level), -- DITO YUNG OVERRIDE: Gamitin yung range, fallback sa original pag walang rule
+    COALESCE(lr.level_display, pa.level),
     pa.inclusion,                             
     pa.description,                           
     pa.video,                                 
@@ -144,12 +139,12 @@ BEGIN
       )
     END,                                      
     pa.summary,
-    COALESCE(aux.service_names, ARRAY[]::text[])
+    COALESCE(aux.service_names, ARRAY[]::text[]),
+    COALESCE(ac.curr_names, ARRAY[]::text[]) 
   FROM program_assets pa
   JOIN programs p ON p.id = pa.program_id AND p.is_active = true
   LEFT JOIN learning_materials lm ON lm.id = pa.learning_material_id
   LEFT JOIN ctx ON true
-  -- Join yung level_ranges para makuha yung "Min - Max" logic
   LEFT JOIN level_ranges lr ON lr.program_id = pa.program_id 
        AND (lr.learning_material_id = pa.learning_material_id OR (pa.learning_material_id IS NULL AND lr.learning_material_id IS NULL))
   LEFT JOIN payment_prerequisites ppp ON ppp.program_id = pa.program_id AND ppp.learning_material_id = pa.learning_material_id
@@ -158,7 +153,10 @@ BEGIN
             OR (pa.learning_material_id IS NULL AND rgl.learning_material_id IS NULL))
   LEFT JOIN aux_services aux ON aux.program_id = pa.program_id 
        AND aux.learning_material_id = pa.learning_material_id
+  LEFT JOIN applicable_currs ac ON ac.program_id = pa.program_id 
+       AND (ac.learning_material_id = pa.learning_material_id OR (pa.learning_material_id IS NULL AND ac.learning_material_id IS NULL))
   WHERE p.organization_id = p_org_id
   ORDER BY p.name, pa.name;
 END
-$function$;
+$function$
+;
